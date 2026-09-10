@@ -1,0 +1,14 @@
+{
+  "name": "tulpie-brew",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram coffee queue bot",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20.6"
+  }
+}
