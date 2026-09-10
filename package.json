@@ -5,10 +5,25 @@
   "description": "Telegram coffee queue bot",
   "type": "module",
   "scripts": {
-    "start": "node --env-file=.env src/index.js",
+    "start": "node --env-file-if-exists=.env src/index.js",
     "test": "node --test"
   },
   "engines": {
-    "node": ">=20.6"
-  }
+    "node": ">=22.9"
+  },
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0218hy/tulpie-brew.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/0218hy/tulpie-brew/issues"
+  },
+  "homepage": "https://github.com/0218hy/tulpie-brew#readme"
 }

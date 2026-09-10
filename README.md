@@ -34,7 +34,7 @@ Customers see only their own order, status, and queue position. Only admins can 
 
 ## Setup
 
-Requirements: Node.js 20.6 or newer and a Telegram bot token from BotFather.
+Requirements: Node.js 22.9 or newer and a Telegram bot token from BotFather.
 
 ```bash
 cp .env.example .env
