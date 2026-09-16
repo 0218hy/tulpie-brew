@@ -24,14 +24,28 @@ export function isAdmin(state, userId) {
 export function recordKnownUser(state, { userId, name, username, chatId }) {
   const id = String(userId);
   state.users ??= {};
+  const existing = state.users[id] ?? {};
   state.users[id] = {
+    ...existing,
     userId: id,
     name: name || 'Customer',
     username: username ? username.replace(/^@/, '').toLowerCase() : null,
     chatId: String(chatId ?? userId),
+    openNotifications: existing.openNotifications ?? false,
     lastSeenAt: new Date().toISOString(),
   };
   return state.users[id];
+}
+
+export function setOpenNotifications(state, userId, enabled) {
+  const user = state.users?.[String(userId)];
+  if (!user) throw new QueueError('Send /start before changing notification settings.');
+  user.openNotifications = Boolean(enabled);
+  return user.openNotifications;
+}
+
+export function openNotificationSubscribers(state) {
+  return Object.values(state.users ?? {}).filter((user) => user.openNotifications && user.chatId);
 }
 
 export function resolveKnownUser(state, reference) {
@@ -47,24 +61,26 @@ export function resolveKnownUser(state, reference) {
 
 export function assertCanOrder(state) {
   if (state.shopStatus === ShopStatus.CLOSED) {
-    throw new QueueError('The coffee shop is closed. New orders are not being accepted.');
+    throw new QueueError('Sorry, coffee shop is closed. New orders are not being accepted.');
   }
   if (state.shopStatus === ShopStatus.PAUSED) {
     throw new QueueError('The queue is paused. Please try again later.');
   }
 }
 
-export function createOrder(state, { userId, name, menuItemId }) {
+export function createOrder(state, { userId, name, menuItemId, useShopCup = false }) {
   assertCanOrder(state);
   if (activeOrderFor(state, userId)) throw new QueueError('You already have an active order.');
 
   const item = availableItem(state, menuItemId);
+  if (useShopCup) reserveShopCup(state);
   const order = {
     id: String(state.nextOrderId++),
     userId: String(userId),
     name: name || 'Customer',
     menuItemId: item.id,
     menuItemName: item.name,
+    useShopCup: Boolean(useShopCup),
     status: 'queued',
     sequence: state.orders.length
       ? Math.max(...state.orders.map((entry) => entry.sequence)) + 1
@@ -77,7 +93,7 @@ export function createOrder(state, { userId, name, menuItemId }) {
   return order;
 }
 
-export function editOrder(state, userId, { menuItemId }) {
+export function editOrder(state, userId, { menuItemId, useShopCup = false }) {
   const order = activeOrderFor(state, userId);
   if (!order) throw new QueueError('You do not have an active order.');
   if (positionFor(state, userId) <= 2) {
@@ -85,8 +101,11 @@ export function editOrder(state, userId, { menuItemId }) {
   }
 
   const item = availableItem(state, menuItemId);
+  if (useShopCup && !order.useShopCup) reserveShopCup(state);
+  if (!useShopCup && order.useShopCup) state.cupsAvailable += 1;
   order.menuItemId = item.id;
   order.menuItemName = item.name;
+  order.useShopCup = Boolean(useShopCup);
   order.updatedAt = new Date().toISOString();
   return order;
 }
@@ -103,6 +122,10 @@ export function cancelOrder(state, orderId, cancelledBy = 'admin') {
   );
   if (!order) throw new QueueError('Active order not found.');
   order.status = 'cancelled';
+  if (order.useShopCup) {
+    state.cupsAvailable += 1;
+    order.cupReservationReleased = true;
+  }
   order.cancelledBy = String(cancelledBy);
   order.completedAt = new Date().toISOString();
   return order;
@@ -135,6 +158,36 @@ export function setShopStatus(state, status) {
   return status;
 }
 
+export function setHelpText(state, text) {
+  const value = String(text ?? '').trim();
+  if (!value) throw new QueueError('Help instructions cannot be empty.');
+  if (value.length > 3500) throw new QueueError('Help instructions must be 3,500 characters or fewer.');
+  state.helpText = value;
+  return value;
+}
+
+export function setMenuImage(state, fileId) {
+  state.menuImageFileId = fileId ? String(fileId) : null;
+  return state.menuImageFileId;
+}
+
+export function setMenuMessage(state, text) {
+  const value = String(text ?? '').trim();
+  if (!value) throw new QueueError('The menu message cannot be empty.');
+  if (value.length > 1000) throw new QueueError('The menu message must be 1,000 characters or fewer.');
+  state.menuMessage = value;
+  return value;
+}
+
+export function setCupInventory(state, quantity) {
+  const number = Number(quantity);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new QueueError('Cup quantity must be a whole number of 0 or more.');
+  }
+  state.cupsAvailable = number;
+  return number;
+}
+
 export function addAdmin(state, userId) {
   const normalizedId = String(userId);
   if (!/^\d+$/.test(normalizedId)) throw new QueueError('Admin ID must be a Telegram numeric user ID.');
@@ -153,8 +206,16 @@ export function removeAdmin(state, userId) {
 export function addMenuItem(state, name) {
   if (!name?.trim()) throw new QueueError('A drink name is required.');
   const id = uniqueId(state.menu.map((item) => item.id), name);
-  const item = { id, name: name.trim(), available: true };
+  const item = { id, name: name.trim(), description: '', available: true };
   state.menu.push(item);
+  return item;
+}
+
+export function setMenuItemDescription(state, itemId, description) {
+  const item = findMenuItem(state, itemId);
+  const value = String(description ?? '').trim();
+  if (value.length > 500) throw new QueueError('Drink descriptions must be 500 characters or fewer.');
+  item.description = value === '-' ? '' : value;
   return item;
 }
 
@@ -181,6 +242,13 @@ function availableItem(state, itemId) {
   const item = state.menu.find((candidate) => candidate.id === itemId && candidate.available);
   if (!item) throw new QueueError('That drink is not currently available.');
   return item;
+}
+
+function reserveShopCup(state) {
+  if (!Number.isSafeInteger(state.cupsAvailable) || state.cupsAvailable <= 0) {
+    throw new QueueError('All shop cups are currently lent out. Please bring your own cup.');
+  }
+  state.cupsAvailable -= 1;
 }
 
 function findMenuItem(state, itemId) {

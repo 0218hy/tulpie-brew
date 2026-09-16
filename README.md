@@ -5,7 +5,7 @@ A Telegram coffee-order queue bot designed to keep admin work to a minimum.
 ## Queue workflow
 
 1. An admin opens the shop.
-2. Customers choose a drink, confirm it, and join the queue.
+2. Customers choose a drink, confirm it, and join the queue. Everyone can view the read-only customer queue.
 3. The bot automatically notifies the first two customers:
    - Queue #1: **It is your turn. Please come to the coffee counter now.**
    - Queue #2: **You are next. Please be ready.**
@@ -29,7 +29,12 @@ Customers see only their own order, status, and queue position. Only admins can 
 - Admin queue view with full order details
 - Full-width customer controls and compact two-column admin controls
 - Customer order view with their own order, status, and queue position
-- Editable menu with add, rename, availability, and remove drink controls
+- Customizable customer help instructions
+- Opt-in, persisted notifications sent only after an admin explicitly opens the shop
+- Persisted shop status across bot restarts without duplicate opening alerts
+- Editable menu/opening message included in opening notifications
+- Editable menu with drink descriptions, availability, and a customer-facing image
+- Shop-cup lending with admin-managed available inventory and automatic reservation
 - JSON persistence for the initial version
 
 ## Setup
@@ -69,6 +74,8 @@ Customers normally use the buttons shown by `/start`.
 | `/start` | Everyone | Open the main panel |
 | `/order` | Everyone | Place an order |
 | `/myorder` | Everyone | View, edit, cancel, or complete your active order |
+| `/queue` | Everyone | View the read-only customer queue |
+| `/help` | Everyone | View the admin-configured help instructions |
 | `/admin` | Admin | Open the compact admin panel |
 | `/open` | Admin | Accept new orders |
 | `/pause` | Admin | Pause new orders; keep processing the queue |
@@ -80,4 +87,6 @@ Customers normally use the buttons shown by `/start`.
 | `/addadmin <userId or @handle>` | Admin | Add an admin; a handle must already have sent `/start` to the bot |
 | `/removeadmin <userId>` | Admin | Remove an admin |
 
-Menu editing is available from `/admin` using short button flows.
+Menu descriptions, the menu image, and the customer-facing menu message are managed from **Admin → Menu**. When opening or resuming, an admin can keep the current menu message or replace it before the shop opens. Help text and the number of shop cups currently available to lend are managed directly from the admin panel.
+
+Customers can opt in or out of shop-opening notifications from the home panel. Their Telegram chat ID and preference are stored in the configured JSON data file. A bot restart preserves the current open, paused, or closed state without sending another opening notification; notifications are sent only after an admin explicitly changes the shop to open. When an order reserves a shop cup, the available count is reduced. Cancelling that order returns the reservation; completed orders remain deducted until an admin updates the available quantity after a cup is returned.

@@ -16,9 +16,13 @@ import {
   removeAdmin,
   removeMenuItem,
   resolveKnownUser,
+  openNotificationSubscribers,
+  setCupInventory,
+  setMenuItemDescription,
+  setOpenNotifications,
   setShopStatus,
 } from '../src/queue.js';
-import { createInitialState, ShopStatus } from '../src/state.js';
+import { createInitialState, prepareStateForStartup, ShopStatus } from '../src/state.js';
 
 const customer = (number) => ({
   userId: String(number),
@@ -31,6 +35,13 @@ function openState() {
   setShopStatus(state, ShopStatus.OPEN);
   return state;
 }
+
+test('bot startup preserves the persisted shop status', () => {
+  const state = openState();
+  prepareStateForStartup(state, ['888']);
+  assert.equal(state.shopStatus, ShopStatus.OPEN);
+  assert.deepEqual(state.adminIds, ['999', '888']);
+});
 
 test('closed and paused shops reject new orders', () => {
   const state = createInitialState(['999']);
@@ -82,7 +93,7 @@ test('queue positions one and two cannot edit, while position three can', () => 
   assert.throws(() => editOrder(state, '1', { menuItemId: 'latte' }), /cannot edit/);
   assert.throws(() => editOrder(state, '2', { menuItemId: 'latte' }), /cannot edit/);
   const edited = editOrder(state, '3', { menuItemId: 'latte' });
-  assert.equal(edited.menuItemName, 'Latte');
+  assert.equal(edited.menuItemName, '🖤 ☕ Black Coffee');
   assert.equal(positionFor(state, '3'), 3);
 });
 
@@ -102,7 +113,7 @@ test('an admin can remove a drink without changing saved orders', () => {
   removeMenuItem(state, 'americano');
 
   assert.equal(state.menu.some((item) => item.id === 'americano'), false);
-  assert.equal(order.menuItemName, 'Americano');
+  assert.equal(order.menuItemName, '🤍☕ White Coffee');
   assert.equal(queue(state).length, 1);
 });
 
@@ -126,4 +137,32 @@ test('a handle resolves only after that person has started the bot', () => {
   });
   assert.equal(resolveKnownUser(state, '@jamie'), '888');
   assert.equal(resolveKnownUser(state, '888'), '888');
+});
+
+test('notification preferences survive user profile refreshes', () => {
+  const state = createInitialState(['999']);
+  recordKnownUser(state, { userId: '1', name: 'Alex', username: 'alex', chatId: '10' });
+  setOpenNotifications(state, '1', true);
+  recordKnownUser(state, { userId: '1', name: 'Alex A', username: 'alex', chatId: '11' });
+
+  assert.equal(state.users['1'].openNotifications, true);
+  assert.deepEqual(openNotificationSubscribers(state).map((user) => user.chatId), ['11']);
+});
+
+test('shop cups are reserved, restored on cancellation, and blocked at zero', () => {
+  const state = openState();
+  setCupInventory(state, 1);
+  const order = createOrder(state, { ...customer(1), useShopCup: true });
+  assert.equal(state.cupsAvailable, 0);
+  assert.throws(() => createOrder(state, { ...customer(2), useShopCup: true }), /bring your own cup/);
+  cancelOrder(state, order.id, 'customer:1');
+  assert.equal(state.cupsAvailable, 1);
+});
+
+test('drink descriptions are saved and can be cleared', () => {
+  const state = openState();
+  setMenuItemDescription(state, 'latte', 'Espresso with steamed milk');
+  assert.equal(state.menu.find((item) => item.id === 'latte').description, 'Espresso with steamed milk');
+  setMenuItemDescription(state, 'latte', '-');
+  assert.equal(state.menu.find((item) => item.id === 'latte').description, '');
 });

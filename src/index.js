@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { CoffeeBot } from './bot.js';
-import { createInitialState, JsonStore } from './state.js';
+import { createInitialState, JsonStore, prepareStateForStartup } from './state.js';
 import { TelegramClient } from './telegram.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -19,7 +19,9 @@ await store.load();
 // Environment admins are merged on startup so a stale data file cannot lock out
 // a newly configured administrator.
 await store.update((state) => {
-  state.adminIds = [...new Set([...state.adminIds, ...adminIds])];
+  // Preserve the persisted shop status across restarts. Startup itself does not
+  // send an opening alert; those are sent only after an admin changes to open.
+  prepareStateForStartup(state, adminIds);
 });
 
 const telegram = new TelegramClient(token);

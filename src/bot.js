@@ -18,6 +18,13 @@ import {
   removeMenuItem,
   renameMenuItem,
   resolveKnownUser,
+  openNotificationSubscribers,
+  setCupInventory,
+  setHelpText,
+  setMenuImage,
+  setMenuItemDescription,
+  setMenuMessage,
+  setOpenNotifications,
   setShopStatus,
   toggleMenuItem,
 } from './queue.js';
@@ -41,7 +48,7 @@ export class CoffeeBot {
   async handleUpdate(update) {
     try {
       if (update.callback_query) return await this.handleCallback(update.callback_query);
-      if (update.message?.text) return await this.handleMessage(update.message);
+      if (update.message?.text || update.message?.photo) return await this.handleMessage(update.message);
     } catch (error) {
       const chatId = update.callback_query?.message?.chat?.id ?? update.message?.chat?.id;
       if (chatId) await this.telegram.sendMessage(chatId, friendlyError(error));
@@ -52,11 +59,12 @@ export class CoffeeBot {
   async handleMessage(message) {
     const chatId = message.chat.id;
     const userId = String(message.from.id);
-    const text = message.text.trim();
+    const text = message.text?.trim() ?? '';
     await this.rememberUser(message.from, chatId);
 
     if (!text.startsWith('/')) {
       if (await this.handleSessionInput(message)) return;
+      if (!text) return;
       return this.showHome(chatId, userId, message.from);
     }
 
@@ -70,6 +78,10 @@ export class CoffeeBot {
         return this.startOrder(chatId, userId, 'create');
       case '/myorder':
         return this.showMyOrder(chatId, userId);
+      case '/queue':
+        return this.showCustomerQueue(chatId);
+      case '/help':
+        return this.showHelp(chatId);
       case '/admin':
         return this.showAdminPanel(chatId, userId);
       case '/adminqueue':
@@ -114,12 +126,16 @@ export class CoffeeBot {
     await this.rememberUser(callback.from, chatId);
 
     if (data === 'home') return this.showHome(chatId, userId, callback.from, messageId);
+    if (data === 'help') return this.showHelp(chatId, messageId);
+    if (data === 'notify_toggle') return this.toggleOpenNotifications(chatId, userId, messageId);
     if (data === 'my_order') return this.showMyOrder(chatId, userId, messageId);
+    if (data === 'customer_queue') return this.showCustomerQueue(chatId, messageId);
     if (data === 'order') return this.startOrder(chatId, userId, 'create', messageId);
     if (data === 'edit_order') return this.startOrder(chatId, userId, 'edit', messageId);
     if (data === 'cancel_own_confirm') return this.confirmCancelOwn(chatId, userId, messageId);
     if (data === 'cancel_own') return this.cancelOwn(chatId, userId, messageId);
     if (data.startsWith('pick:')) return this.pickItem(chatId, userId, data.slice(5), messageId);
+    if (data.startsWith('cup:')) return this.pickCup(chatId, userId, data.slice(4), messageId);
     if (data === 'confirm_order') return this.confirmOrder(chatId, userId, callback.from, messageId);
     if (data.startsWith('done:')) return this.completeOwn(chatId, userId, data.slice(5), messageId);
 
@@ -128,6 +144,15 @@ export class CoffeeBot {
     if (data === 'admin_queue') return this.showAdminQueue(chatId, messageId);
     if (data === 'admin_cancel_list') return this.showCancelOrderList(chatId, messageId);
     if (data === 'admin_menu') return this.showAdminMenu(chatId, messageId);
+    if (data === 'admin_menu_message') return this.prompt(chatId, userId, { type: 'menu_message' }, 'Send the customer-facing menu message.');
+    if (data === 'admin_help') return this.prompt(chatId, userId, { type: 'help_text' }, 'Send the help instructions customers should see.');
+    if (data === 'admin_cups') return this.prompt(chatId, userId, { type: 'cup_inventory' }, 'Send the number of shop cups currently available to lend.');
+    if (data === 'admin_menu_image') return this.prompt(chatId, userId, { type: 'menu_image' }, 'Send the menu image as a Telegram photo.');
+    if (data === 'admin_remove_menu_image') return this.removeMenuImage(chatId, messageId);
+    if (data === 'status_open_keep') return this.openShop(chatId, userId, messageId);
+    if (data === 'status_open_change') {
+      return this.prompt(chatId, userId, { type: 'open_shop_message' }, 'Send the new menu message. The shop will open after it is saved.');
+    }
     if (data === 'admin_add_item') return this.prompt(chatId, userId, { type: 'add_item' }, 'Send the new drink name.');
     if (data === 'admin_add') {
       return this.prompt(
@@ -151,42 +176,76 @@ export class CoffeeBot {
       const itemId = data.slice(12);
       return this.prompt(chatId, userId, { type: 'rename_item', itemId }, 'Send the new drink name.');
     }
+    if (data.startsWith('describe_item:')) {
+      const itemId = data.slice(14);
+      return this.prompt(chatId, userId, { type: 'describe_item', itemId }, 'Send the drink description, or send - to clear it.');
+    }
     if (data.startsWith('delete_item_confirm:')) return this.confirmDeleteItem(chatId, data.slice(20), messageId);
     if (data.startsWith('delete_item:')) return this.deleteItem(chatId, data.slice(12), messageId);
   }
 
   async showHome(chatId, userId, from, messageId) {
     const state = this.store.get();
-    const status = titleCase(state.shopStatus);
+    const status = shopStatusLabel(state.shopStatus);
+    const subscribed = state.users?.[userId]?.openNotifications;
     const rows = [
-      [button('Order', 'order')],
-      [button('My order', 'my_order')],
+      [button('☕ Order a drink', 'order')],
+      [button('🧾 My order', 'my_order'), button('👥 View queue', 'customer_queue')],
+      [button('❓ Help / How to order', 'help')],
+      [button(subscribed ? '🔕 Stop open notifications' : '🔔 Notify me when open', 'notify_toggle')],
     ];
     if (isAdmin(state, userId)) rows.push([button('Admin', 'admin')]);
-    return this.render(chatId, messageId, `Tulpie Brew\n${status}`, keyboard(...rows));
+    return this.render(
+      chatId,
+      messageId,
+      `☕🍵 <b>WELCOME TO THE TULPIE BREWSSS BOT!!!</b> 🦄🦄\n\n<b>SHOP STATUS:</b> ${status}`,
+      keyboard(...rows),
+      { parse_mode: 'HTML' },
+    );
+  }
+
+  async showHelp(chatId, messageId) {
+    return this.render(chatId, messageId, `❓ Help\n\n${this.store.get().helpText}`, keyboard([button('🏠 Home', 'home')]));
+  }
+
+  async toggleOpenNotifications(chatId, userId, messageId) {
+    const enabled = await this.store.update((state) => {
+      const current = state.users?.[userId]?.openNotifications ?? false;
+      return setOpenNotifications(state, userId, !current);
+    });
+    const text = enabled
+      ? 'You will be notified when the coffee shop opens.'
+      : 'Open notifications have been turned off.';
+    return this.render(chatId, messageId, text, keyboard([button('Home', 'home')]));
   }
 
   async startOrder(chatId, userId, mode, messageId) {
     const state = this.store.get();
+    let originalUseShopCup = false;
     if (mode === 'create') {
-      if (state.shopStatus === ShopStatus.CLOSED) throw new QueueError('The coffee shop is closed. New orders are not being accepted.');
+      if (state.shopStatus === ShopStatus.CLOSED) throw new QueueError('Sorry, the coffee shop is closed right now. New orders are not being accepted. :(');
       if (state.shopStatus === ShopStatus.PAUSED) throw new QueueError('The queue is paused. Please try again later.');
       if (activeOrderFor(state, userId)) return this.showMyOrder(chatId, userId, messageId);
     } else {
       const existing = activeOrderFor(state, userId);
       if (!existing) throw new QueueError('You do not have an active order.');
       if (positionFor(state, userId) <= 2) throw new QueueError('You cannot edit while you are current or next in the queue.');
+      originalUseShopCup = Boolean(existing.useShopCup);
     }
 
     const available = state.menu.filter((item) => item.available);
     if (!available.length) throw new QueueError('No drinks are currently available.');
-    this.sessions.set(userId, { type: 'order', mode });
-    return this.render(
-      chatId,
-      messageId,
-      mode === 'edit' ? 'Change drink' : 'Choose a drink',
-      keyboard(...available.map((item) => [button(item.name, `pick:${item.id}`)]), [button('Home', 'home')]),
-    );
+    this.sessions.set(userId, { type: 'order', mode, originalUseShopCup });
+    const heading = mode === 'edit' ? '✏️ <b>Change your drink</b>' : '☕ <b>Choose a drink</b>';
+    const descriptions = available
+      .map((item) => `<b>${escapeHtml(item.name)}</b>${item.description ? `\n${escapeHtml(item.description)}` : ''}`)
+      .join('\n\n');
+    const text = `${heading}\n\n${escapeHtml(state.menuMessage)}\n\n${descriptions}`;
+    const controls = keyboard(...available.map((item) => [button(item.name, `pick:${item.id}`)]), [button('🏠 Home', 'home')]);
+    if (state.menuImageFileId) {
+      return this.telegram.sendPhoto(chatId, state.menuImageFileId, text, controls, { parse_mode: 'HTML' });
+    }
+    return this.render(chatId, messageId, text, controls, { parse_mode: 'HTML' });
   }
 
   async pickItem(chatId, userId, itemId, messageId) {
@@ -195,6 +254,32 @@ export class CoffeeBot {
     const item = this.store.get().menu.find((entry) => entry.id === itemId && entry.available);
     if (!item) throw new QueueError('That drink is not currently available.');
     Object.assign(session, { itemId });
+    return this.showCupChoice(chatId, userId, messageId);
+  }
+
+  async showCupChoice(chatId, userId, messageId) {
+    const state = this.store.get();
+    const session = this.sessions.get(userId);
+    const rows = [[button('♻️ I will bring my own cup', 'cup:own')]];
+    if (state.cupsAvailable > 0 || session?.originalUseShopCup) {
+      const label = session?.originalUseShopCup ? 'Keep my reserved shop cup' : `Use the shop's cups (${state.cupsAvailable} left)`;
+      rows.push([button(`🥤 ${label}`, 'cup:shop')]);
+    }
+    const note = state.cupsAvailable > 0 || session?.originalUseShopCup
+      ? '🥤 Choose a cup option'
+      : '🥤 All shop cups are currently lent out.\n\nPlease bring your own cup.';
+    rows.push([button('↩️ Choose another drink', session?.mode === 'edit' ? 'edit_order' : 'order')]);
+    return this.render(chatId, messageId, note, keyboard(...rows));
+  }
+
+  async pickCup(chatId, userId, choice, messageId) {
+    const session = this.sessions.get(userId);
+    if (session?.type !== 'order' || !session.itemId) throw new QueueError('That order session expired. Please start again.');
+    if (!['own', 'shop'].includes(choice)) throw new QueueError('Invalid cup option.');
+    if (choice === 'shop' && this.store.get().cupsAvailable <= 0 && !session.originalUseShopCup) {
+      throw new QueueError('All shop cups are currently lent out. Please bring your own cup.');
+    }
+    session.useShopCup = choice === 'shop';
     return this.showOrderConfirmation(chatId, userId, messageId);
   }
 
@@ -204,15 +289,15 @@ export class CoffeeBot {
     return this.render(
       chatId,
       messageId,
-      `Your order\n${item.name}`,
-      keyboard([button(session.mode === 'edit' ? 'Save' : 'Confirm', 'confirm_order')], [button('Start over', session.mode === 'edit' ? 'edit_order' : 'order')]),
+      `🧾 Your order\n\n☕ ${item.name}\n🥤 ${session.useShopCup ? 'Shop cup' : 'Own cup'}`,
+      keyboard([button(session.mode === 'edit' ? '✅ Save' : '✅ Confirm order', 'confirm_order')], [button('↩️ Start over', session.mode === 'edit' ? 'edit_order' : 'order')]),
     );
   }
 
   async confirmOrder(chatId, userId, from, messageId) {
     const session = this.sessions.get(userId);
-    if (session?.type !== 'order' || !session.itemId) throw new QueueError('That order session expired. Please start again.');
-    const payload = { menuItemId: session.itemId };
+    if (session?.type !== 'order' || !session.itemId || session.useShopCup === undefined) throw new QueueError('That order session expired. Please start again.');
+    const payload = { menuItemId: session.itemId, useShopCup: session.useShopCup };
     let order;
     if (session.mode === 'edit') {
       order = await this.store.update((state) => editOrder(state, userId, payload));
@@ -227,8 +312,8 @@ export class CoffeeBot {
     await this.render(
       chatId,
       messageId,
-      `${session.mode === 'edit' ? 'Order updated' : 'Order placed'}\n${orderDescription(order)}\nPosition: ${positionFor(this.store.get(), userId)}`,
-      keyboard([button('My order', 'my_order')], [button('Home', 'home')]),
+      `${session.mode === 'edit' ? '✅ Order updated!' : '✅ Order placed! Thank you for ordering! :)'}\n\n${orderDescription(order)}\n\nQueue position: ${positionFor(this.store.get(), userId)}`,
+      keyboard([button('🧾 My order', 'my_order')], [button('🏠 Home', 'home')]),
     );
     await this.notifyQueueWindow();
   }
@@ -236,7 +321,7 @@ export class CoffeeBot {
   async showMyOrder(chatId, userId, messageId) {
     const state = this.store.get();
     const order = activeOrderFor(state, userId);
-    if (!order) return this.render(chatId, messageId, 'No active order.', keyboard([button('Order', 'order')], [button('Home', 'home')]));
+    if (!order) return this.render(chatId, messageId, '🧾 You have no active order.', keyboard([button('☕ Order a drink', 'order')], [button('🏠 Home', 'home')]));
     const position = positionFor(state, userId);
     const status = position === 1 ? 'CURRENT' : position === 2 ? 'NEXT' : 'WAITING';
     const rows = [];
@@ -246,8 +331,23 @@ export class CoffeeBot {
     return this.render(
       chatId,
       messageId,
-      `Your order\n${orderDescription(order)}\nPosition: ${position}\n${titleCase(status)}`,
+      `🧾 Your order\n\n${orderDescription(order)}\n\nQueue position: ${position}\nStatus: ${titleCase(status)}`,
       keyboard(...rows),
+    );
+  }
+
+  async showCustomerQueue(chatId, messageId) {
+    const state = this.store.get();
+    const orders = queue(state);
+    const lines = orders.map((order, index) => {
+      const marker = index === 0 ? '☕ NOW' : index === 1 ? '⏳ NEXT' : `#${index + 1}`;
+      return `${marker} · ${order.name}\n${order.menuItemName}`;
+    });
+    return this.render(
+      chatId,
+      messageId,
+      `👥 Customer queue\n\n${lines.join('\n\n') || 'The queue is empty.'}`,
+      keyboard([button('🔄 Refresh', 'customer_queue')], [button('🏠 Home', 'home')]),
     );
   }
 
@@ -271,13 +371,13 @@ export class CoffeeBot {
     await this.notifyQueueWindow();
   }
 
-  async render(chatId, messageId, text, replyMarkup) {
-    if (!messageId) return this.telegram.sendMessage(chatId, text, replyMarkup);
+  async render(chatId, messageId, text, replyMarkup, options = {}) {
+    if (!messageId) return this.telegram.sendMessage(chatId, text, replyMarkup, options);
     try {
-      return await this.telegram.editMessage(chatId, messageId, text, replyMarkup);
+      return await this.telegram.editMessage(chatId, messageId, text, replyMarkup, options);
     } catch (error) {
       if (String(error.message).includes('message is not modified')) return;
-      return this.telegram.sendMessage(chatId, text, replyMarkup);
+      return this.telegram.sendMessage(chatId, text, replyMarkup, options);
     }
   }
 
@@ -296,6 +396,7 @@ export class CoffeeBot {
       keyboard(
         statusControls,
         [button('Queue', 'admin_queue'), button('Menu', 'admin_menu')],
+        [button(`Shop cups: ${state.cupsAvailable}`, 'admin_cups'), button('Edit help', 'admin_help')],
         [button('Add admin', 'admin_add'), button('Remove admin', 'admin_remove')],
         [button('Customer view', 'home')],
       ),
@@ -304,8 +405,31 @@ export class CoffeeBot {
 
   async changeStatus(chatId, userId, status, messageId) {
     this.requireAdmin(userId);
+    if (status === ShopStatus.OPEN) return this.showOpenShopPrompt(chatId, messageId);
     await this.store.update((state) => setShopStatus(state, status));
     return this.showAdminPanel(chatId, userId, messageId);
+  }
+
+  async showOpenShopPrompt(chatId, messageId) {
+    const message = this.store.get().menuMessage;
+    return this.render(
+      chatId,
+      messageId,
+      `Open the shop with this menu message?\n\n${message}`,
+      keyboard(
+        [button('Keep message & open', 'status_open_keep')],
+        [button('Change message', 'status_open_change')],
+        [button('Back', 'admin')],
+      ),
+    );
+  }
+
+  async openShop(chatId, userId, messageId) {
+    this.requireAdmin(userId);
+    const wasOpen = this.store.get().shopStatus === ShopStatus.OPEN;
+    await this.store.update((state) => setShopStatus(state, ShopStatus.OPEN));
+    await this.showAdminPanel(chatId, userId, messageId);
+    if (!wasOpen) await this.notifyShopOpenSubscribers();
   }
 
   async showAdminQueue(chatId, messageId) {
@@ -373,7 +497,20 @@ export class CoffeeBot {
   async showAdminMenu(chatId, messageId) {
     const state = this.store.get();
     const itemButtons = state.menu.map((item) => button(`${item.available ? '[On]' : '[Off]'} ${item.name}`, `item:${item.id}`));
-    return this.render(chatId, messageId, 'Menu', keyboard(...buttonRows(itemButtons), [button('Add drink', 'admin_add_item'), button('Admin', 'admin')]));
+    const imageControls = state.menuImageFileId
+      ? [button('Change menu image', 'admin_menu_image'), button('Remove image', 'admin_remove_menu_image')]
+      : [button('Add menu image', 'admin_menu_image')];
+    return this.render(
+      chatId,
+      messageId,
+      `Menu\n\nCustomer message:\n${state.menuMessage}\n\n${state.menuImageFileId ? 'Menu image set' : 'No menu image'}`,
+      keyboard(
+        ...buttonRows(itemButtons),
+        [button('Edit menu message', 'admin_menu_message')],
+        imageControls,
+        [button('Add drink', 'admin_add_item'), button('Admin', 'admin')],
+      ),
+    );
   }
 
   async showAdminItem(chatId, itemId, messageId) {
@@ -382,10 +519,11 @@ export class CoffeeBot {
     return this.render(
       chatId,
       messageId,
-      `${item.name}\n${item.available ? 'Available' : 'Unavailable'}`,
+      `${item.name}\n${item.description || 'No description'}\n${item.available ? 'Available' : 'Unavailable'}`,
       keyboard(
         [button(item.available ? 'Mark unavailable' : 'Mark available', `toggle_item:${item.id}`)],
-        [button('Rename', `rename_item:${item.id}`), button('Remove drink', `delete_item_confirm:${item.id}`)],
+        [button('Rename', `rename_item:${item.id}`), button('Description', `describe_item:${item.id}`)],
+        [button('Remove drink', `delete_item_confirm:${item.id}`)],
         [button('Menu', 'admin_menu')],
       ),
     );
@@ -404,6 +542,11 @@ export class CoffeeBot {
 
   async deleteItem(chatId, itemId, messageId) {
     await this.store.update((state) => removeMenuItem(state, itemId));
+    return this.showAdminMenu(chatId, messageId);
+  }
+
+  async removeMenuImage(chatId, messageId) {
+    await this.store.update((state) => setMenuImage(state, null));
     return this.showAdminMenu(chatId, messageId);
   }
 
@@ -445,7 +588,18 @@ export class CoffeeBot {
     if (!session || session.type === 'order') return false;
     this.requireAdmin(userId);
     const chatId = message.chat.id;
-    const text = message.text.trim();
+    const text = message.text?.trim() ?? '';
+
+    if (session.type === 'menu_image') {
+      const photo = message.photo?.at(-1);
+      if (!photo?.file_id) throw new QueueError('Please send the image as a Telegram photo, or use /cancelinput.');
+      await this.store.update((state) => setMenuImage(state, photo.file_id));
+      this.sessions.delete(userId);
+      await this.telegram.sendMessage(chatId, 'Menu image saved.');
+      await this.showAdminMenu(chatId);
+      return true;
+    }
+    if (!text) throw new QueueError('Please send text, or use /cancelinput.');
 
     if (session.type === 'add_item') {
       const item = await this.store.update((state) => addMenuItem(state, text));
@@ -458,6 +612,39 @@ export class CoffeeBot {
       await this.store.update((state) => renameMenuItem(state, session.itemId, text));
       this.sessions.delete(userId);
       await this.showAdminItem(chatId, session.itemId);
+      return true;
+    }
+    if (session.type === 'describe_item') {
+      await this.store.update((state) => setMenuItemDescription(state, session.itemId, text));
+      this.sessions.delete(userId);
+      await this.showAdminItem(chatId, session.itemId);
+      return true;
+    }
+    if (session.type === 'menu_message') {
+      await this.store.update((state) => setMenuMessage(state, text));
+      this.sessions.delete(userId);
+      await this.telegram.sendMessage(chatId, 'Menu message saved.');
+      await this.showAdminMenu(chatId);
+      return true;
+    }
+    if (session.type === 'open_shop_message') {
+      await this.store.update((state) => setMenuMessage(state, text));
+      this.sessions.delete(userId);
+      await this.openShop(chatId, userId);
+      return true;
+    }
+    if (session.type === 'help_text') {
+      await this.store.update((state) => setHelpText(state, text));
+      this.sessions.delete(userId);
+      await this.telegram.sendMessage(chatId, 'Help instructions saved.');
+      await this.showAdminPanel(chatId, userId);
+      return true;
+    }
+    if (session.type === 'cup_inventory') {
+      const quantity = await this.store.update((state) => setCupInventory(state, text));
+      this.sessions.delete(userId);
+      await this.telegram.sendMessage(chatId, `Shop cup availability set to ${quantity}.`);
+      await this.showAdminPanel(chatId, userId);
       return true;
     }
     if (session.type === 'add_admin') {
@@ -490,6 +677,22 @@ export class CoffeeBot {
     }
   }
 
+  async notifyShopOpenSubscribers() {
+    const state = this.store.get();
+    if (state.shopStatus !== ShopStatus.OPEN) return;
+    for (const user of openNotificationSubscribers(state)) {
+      try {
+        await this.telegram.sendMessage(
+          user.chatId,
+          `☕ Tulpie Brew is open!\n\n${state.menuMessage}`,
+          keyboard([button('☕ Order now', 'order')], [button('🏠 Home', 'home')]),
+        );
+      } catch (error) {
+        console.error(`Could not send open notification to ${user.userId}:`, error);
+      }
+    }
+  }
+
   requireAdmin(userId) {
     if (!isAdmin(this.store.get(), userId)) throw new QueueError('Admin access required.');
   }
@@ -509,7 +712,7 @@ function displayName(from = {}) {
 }
 
 function orderDescription(order) {
-  return order.menuItemName;
+  return `☕ ${order.menuItemName}\n🥤 ${order.useShopCup ? 'Shop cup' : 'Own cup'}`;
 }
 
 function friendlyError(error) {
@@ -519,4 +722,20 @@ function friendlyError(error) {
 function titleCase(value) {
   const text = String(value).toLowerCase();
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function shopStatusLabel(status) {
+  const labels = {
+    [ShopStatus.CLOSED]: 'CLOSED ❌',
+    [ShopStatus.OPEN]: 'OPEN ☑️',
+    [ShopStatus.PAUSED]: 'PAUSED ⏸️',
+  };
+  return labels[status] ?? String(status).toUpperCase();
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }

@@ -16,20 +16,32 @@ export class TelegramClient {
     return payload.result;
   }
 
-  sendMessage(chatId, text, replyMarkup) {
+  sendMessage(chatId, text, replyMarkup, options = {}) {
     return this.call('sendMessage', {
       chat_id: chatId,
       text,
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      ...options,
     });
   }
 
-  editMessage(chatId, messageId, text, replyMarkup) {
+  sendPhoto(chatId, photo, caption, replyMarkup, options = {}) {
+    return this.call('sendPhoto', {
+      chat_id: chatId,
+      photo,
+      caption,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      ...options,
+    });
+  }
+
+  editMessage(chatId, messageId, text, replyMarkup, options = {}) {
     return this.call('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text,
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      ...options,
     });
   }
 
