@@ -1,0 +1,6 @@
+.env
+.git
+data/
+node_modules/
+test/
+.DS_Store

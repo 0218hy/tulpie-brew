@@ -65,6 +65,23 @@ Run tests with:
 npm test
 ```
 
+## Docker Compose
+
+From the project directory, create `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Set `TELEGRAM_BOT_TOKEN` and `ADMIN_IDS` in `.env`. Keep `DATA_FILE=./data/state.json` so the bot writes its state to the mounted directory. Then start it:
+
+```bash
+mkdir -p data
+docker compose up --build -d
+```
+
+Compose stores `data/state.json` in the project directory, so orders and settings survive container restarts. The `data` directory must be writable by UID 1000, the user that runs the bot in the container. The bot polls Telegram and does not need a published port. View its logs with `docker compose logs -f bot` and stop it with `docker compose down`.
+
 ## Main commands
 
 Customers normally use the buttons shown by `/start`.
