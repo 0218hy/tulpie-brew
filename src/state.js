@@ -59,7 +59,10 @@ export class JsonStore {
       const migration = legacyDefaultNames[item.id];
       if (migration && item.name === migration[0]) item.name = migration[1];
     }
-    for (const user of Object.values(this.state.users)) user.openNotifications ??= false;
+    for (const user of Object.values(this.state.users)) {
+      user.openNotifications ??= false;
+      user.orderNotifications ??= false;
+    }
     return this.get();
   }
 

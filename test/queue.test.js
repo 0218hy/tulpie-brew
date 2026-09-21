@@ -17,9 +17,11 @@ import {
   removeMenuItem,
   resolveKnownUser,
   openNotificationSubscribers,
+  orderNotificationAdmins,
   setCupInventory,
   setMenuItemDescription,
   setOpenNotifications,
+  setOrderNotifications,
   setShopStatus,
 } from '../src/queue.js';
 import { createInitialState, prepareStateForStartup, ShopStatus } from '../src/state.js';
@@ -142,11 +144,16 @@ test('a handle resolves only after that person has started the bot', () => {
 test('notification preferences survive user profile refreshes', () => {
   const state = createInitialState(['999']);
   recordKnownUser(state, { userId: '1', name: 'Alex', username: 'alex', chatId: '10' });
+  recordKnownUser(state, { userId: '999', name: 'Admin', username: 'admin', chatId: '90' });
   setOpenNotifications(state, '1', true);
+  setOrderNotifications(state, '999', true);
   recordKnownUser(state, { userId: '1', name: 'Alex A', username: 'alex', chatId: '11' });
+  recordKnownUser(state, { userId: '999', name: 'Admin B', username: 'admin', chatId: '91' });
 
   assert.equal(state.users['1'].openNotifications, true);
+  assert.equal(state.users['999'].orderNotifications, true);
   assert.deepEqual(openNotificationSubscribers(state).map((user) => user.chatId), ['11']);
+  assert.deepEqual(orderNotificationAdmins(state).map((user) => user.chatId), ['91']);
 });
 
 test('shop cups are reserved, restored on cancellation, and blocked at zero', () => {
@@ -165,4 +172,30 @@ test('drink descriptions are saved and can be cleared', () => {
   assert.equal(state.menu.find((item) => item.id === 'latte').description, 'Espresso with steamed milk');
   setMenuItemDescription(state, 'latte', '-');
   assert.equal(state.menu.find((item) => item.id === 'latte').description, '');
+});
+
+test('order alerts are off by default and only ever go to current admins', () => {
+  const state = openState();
+  recordKnownUser(state, { userId: '1', name: 'Alex', username: 'alex', chatId: '10' });
+  recordKnownUser(state, { userId: '999', name: 'Admin', username: 'admin', chatId: '90' });
+  recordKnownUser(state, { userId: '888', name: 'Other', username: 'other', chatId: '80' });
+  addAdmin(state, '888');
+
+  assert.deepEqual(orderNotificationAdmins(state), []);
+
+  // A customer who somehow carries the flag is still not an admin.
+  setOrderNotifications(state, '1', true);
+  setOrderNotifications(state, '999', true);
+  setOrderNotifications(state, '888', true);
+  // Object.values orders integer-like keys numerically, not by insertion.
+  assert.deepEqual(orderNotificationAdmins(state).map((user) => user.userId), ['888', '999']);
+
+  removeAdmin(state, '888');
+  assert.deepEqual(orderNotificationAdmins(state).map((user) => user.userId), ['999']);
+  assert.equal(state.users['888'].orderNotifications, true, 'the preference is kept for a re-added admin');
+});
+
+test('order alert preferences cannot be set for an unknown user', () => {
+  const state = openState();
+  assert.throws(() => setOrderNotifications(state, '404', true), QueueError);
 });

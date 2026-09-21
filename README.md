@@ -31,6 +31,7 @@ Customers see only their own order, status, and queue position. Only admins can 
 - Customer order view with their own order, status, and queue position
 - Customizable customer help instructions
 - Opt-in, persisted notifications sent only after an admin explicitly opens the shop
+- Opt-in admin order alerts for new, edited, and customer-cancelled orders
 - Persisted shop status across bot restarts without duplicate opening alerts
 - Editable menu/opening message included in opening notifications
 - Editable menu with drink descriptions, availability, and a customer-facing image
@@ -104,6 +105,8 @@ Customers normally use the buttons shown by `/start`.
 | `/addadmin <userId or @handle>` | Admin | Add an admin; a handle must already have sent `/start` to the bot |
 | `/removeadmin <userId>` | Admin | Remove an admin |
 
-Menu descriptions, the menu image, and the customer-facing menu message are managed from **Admin → Menu**. When opening or resuming, an admin can keep the current menu message or replace it before the shop opens. Help text and the number of shop cups currently available to lend are managed directly from the admin panel.
+Menu descriptions, the menu image, and the customer-facing menu message are managed from **Admin → Menu**. When opening or resuming, an admin can keep the current menu message or replace it before the shop opens. Help text, the number of shop cups currently available to lend, and each admin's order alerts are managed directly from the admin panel.
+
+Admins can turn on order alerts from **Admin → Order alerts**. The setting is per-admin and off by default, so an admin who does not want to be pinged simply leaves it off. While it is on, that admin receives a message whenever a customer places an order, edits a waiting order, or cancels their own order. Each alert shows the customer name, drink, cup choice, order ID, and the resulting queue length, with buttons to open the admin queue or cancel that order. An admin is never alerted about their own order, and alerts stop immediately if that admin is removed. Admin-initiated cancellations are not announced, since the admin who ran the cancellation already knows and the rest see it in the queue view.
 
 Customers can opt in or out of shop-opening notifications from the home panel. Their Telegram chat ID and preference are stored in the configured JSON data file. A bot restart preserves the current open, paused, or closed state without sending another opening notification; notifications are sent only after an admin explicitly changes the shop to open. When an order reserves a shop cup, the available count is reduced. Cancelling that order returns the reservation; completed orders remain deducted until an admin updates the available quantity after a cup is returned.

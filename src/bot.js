@@ -19,12 +19,14 @@ import {
   renameMenuItem,
   resolveKnownUser,
   openNotificationSubscribers,
+  orderNotificationAdmins,
   setCupInventory,
   setHelpText,
   setMenuImage,
   setMenuItemDescription,
   setMenuMessage,
   setOpenNotifications,
+  setOrderNotifications,
   setShopStatus,
   toggleMenuItem,
 } from './queue.js';
@@ -32,6 +34,11 @@ import { ShopStatus } from './state.js';
 
 const button = (text, callbackData) => ({ text, callback_data: callbackData });
 const keyboard = (...rows) => ({ inline_keyboard: rows.filter((row) => row.length) });
+const ORDER_ALERT_HEADINGS = {
+  created: 'New order',
+  edited: 'Order updated',
+  cancelled: 'Order cancelled',
+};
 const buttonRows = (buttons, size = 2) => {
   const rows = [];
   for (let index = 0; index < buttons.length; index += size) rows.push(buttons.slice(index, index + size));
@@ -142,6 +149,7 @@ export class CoffeeBot {
     this.requireAdmin(userId);
     if (data === 'admin') return this.showAdminPanel(chatId, userId, messageId);
     if (data === 'admin_queue') return this.showAdminQueue(chatId, messageId);
+    if (data === 'admin_order_alerts') return this.toggleOrderNotifications(chatId, userId, messageId);
     if (data === 'admin_cancel_list') return this.showCancelOrderList(chatId, messageId);
     if (data === 'admin_menu') return this.showAdminMenu(chatId, messageId);
     if (data === 'admin_menu_message') return this.prompt(chatId, userId, { type: 'menu_message' }, 'Send the customer-facing menu message.');
@@ -316,6 +324,7 @@ export class CoffeeBot {
       keyboard([button('🧾 My order', 'my_order')], [button('🏠 Home', 'home')]),
     );
     await this.notifyQueueWindow();
+    await this.notifyAdminsOfOrder(order, session.mode === 'edit' ? 'edited' : 'created');
   }
 
   async showMyOrder(chatId, userId, messageId) {
@@ -358,9 +367,10 @@ export class CoffeeBot {
   }
 
   async cancelOwn(chatId, userId, messageId) {
-    await this.store.update((state) => cancelOwnOrder(state, userId));
+    const order = await this.store.update((state) => cancelOwnOrder(state, userId));
     await this.render(chatId, messageId, 'Order cancelled.', keyboard([button('Home', 'home')]));
     await this.notifyQueueWindow();
+    await this.notifyAdminsOfOrder(order, 'cancelled');
   }
 
   async completeOwn(chatId, userId, orderId, messageId) {
@@ -389,6 +399,7 @@ export class CoffeeBot {
       : state.shopStatus === ShopStatus.PAUSED
         ? [button('Resume', 'status:open'), button('Close', 'status:closed')]
         : [button('Open', 'status:open')];
+    const orderAlerts = state.users?.[userId]?.orderNotifications ? 'On' : 'Off';
     return this.render(
       chatId,
       messageId,
@@ -398,9 +409,18 @@ export class CoffeeBot {
         [button('Queue', 'admin_queue'), button('Menu', 'admin_menu')],
         [button(`Shop cups: ${state.cupsAvailable}`, 'admin_cups'), button('Edit help', 'admin_help')],
         [button('Add admin', 'admin_add'), button('Remove admin', 'admin_remove')],
+        [button(`Order alerts: ${orderAlerts}`, 'admin_order_alerts')],
         [button('Customer view', 'home')],
       ),
     );
+  }
+
+  async toggleOrderNotifications(chatId, userId, messageId) {
+    await this.store.update((state) => {
+      const current = state.users?.[userId]?.orderNotifications ?? false;
+      return setOrderNotifications(state, userId, !current);
+    });
+    return this.showAdminPanel(chatId, userId, messageId);
   }
 
   async changeStatus(chatId, userId, status, messageId) {
@@ -673,6 +693,32 @@ export class CoffeeBot {
         await this.store.update((state) => markNotified(state, order.id));
       } catch (error) {
         console.error(`Could not notify order ${order.id}:`, error);
+      }
+    }
+  }
+
+  // Admin-initiated cancellations are deliberately silent: the admin who ran it
+  // already knows, and the others see the change in the queue view.
+  async notifyAdminsOfOrder(order, event) {
+    const heading = ORDER_ALERT_HEADINGS[event];
+    if (!heading) return;
+    const state = this.store.get();
+    const recipients = orderNotificationAdmins(state);
+    if (!recipients.length) return;
+
+    const text = `${heading} #${order.id}\n${order.name}\n\n${orderDescription(order)}\n\n${queue(state).length} in queue`;
+    const rows = [[button('Queue', 'admin_queue')]];
+    if (event !== 'cancelled') rows.push([button('Cancel order', `admin_cancel_confirm:${order.id}`)]);
+    const controls = keyboard(...rows);
+
+    for (const admin of recipients) {
+      // An admin ordering for themselves does not need to be told about it.
+      if (admin.userId === String(order.userId)) continue;
+      try {
+        await this.telegram.sendMessage(admin.chatId, text, controls);
+      } catch (error) {
+        // One admin blocking the bot must not stop the alert reaching the rest.
+        console.error(`Could not send the order alert to ${admin.userId}:`, error);
       }
     }
   }

@@ -32,6 +32,7 @@ export function recordKnownUser(state, { userId, name, username, chatId }) {
     username: username ? username.replace(/^@/, '').toLowerCase() : null,
     chatId: String(chatId ?? userId),
     openNotifications: existing.openNotifications ?? false,
+    orderNotifications: existing.orderNotifications ?? false,
     lastSeenAt: new Date().toISOString(),
   };
   return state.users[id];
@@ -46,6 +47,20 @@ export function setOpenNotifications(state, userId, enabled) {
 
 export function openNotificationSubscribers(state) {
   return Object.values(state.users ?? {}).filter((user) => user.openNotifications && user.chatId);
+}
+
+export function setOrderNotifications(state, userId, enabled) {
+  const user = state.users?.[String(userId)];
+  if (!user) throw new QueueError('Send /start before changing notification settings.');
+  user.orderNotifications = Boolean(enabled);
+  return user.orderNotifications;
+}
+
+// Admin status is checked here rather than cleared in removeAdmin, so a demoted
+// admin goes quiet at once and keeps their preference if they are added back.
+export function orderNotificationAdmins(state) {
+  return Object.values(state.users ?? {})
+    .filter((user) => user.orderNotifications && user.chatId && isAdmin(state, user.userId));
 }
 
 export function resolveKnownUser(state, reference) {
