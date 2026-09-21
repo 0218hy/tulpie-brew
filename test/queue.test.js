@@ -70,11 +70,12 @@ test('only the first two queue entries are notified', () => {
   createOrder(state, customer(2));
   createOrder(state, customer(3));
 
-  assert.deepEqual(notificationTargets(state).map((order) => order.userId), ['1', '2']);
-  markNotified(state, '1');
-  markNotified(state, '2');
+  const labels = () => notificationTargets(state).map(({ order, position }) => `${order.userId}:${position}`);
+  assert.deepEqual(labels(), ['1:1', '2:2']);
+  markNotified(state, '1', 1);
+  markNotified(state, '2', 2);
   completeCurrentOrder(state, { userId: '1' });
-  assert.deepEqual(notificationTargets(state).map((order) => order.userId), ['3']);
+  assert.deepEqual(labels(), ['2:1', '3:2']);
 });
 
 test('only the current customer can complete the order', () => {

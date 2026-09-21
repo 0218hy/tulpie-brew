@@ -34,6 +34,7 @@ import { ShopStatus } from './state.js';
 
 const button = (text, callbackData) => ({ text, callback_data: callbackData });
 const keyboard = (...rows) => ({ inline_keyboard: rows.filter((row) => row.length) });
+const USER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const ORDER_ALERT_HEADINGS = {
   created: 'New order',
   edited: 'Order updated',
@@ -125,9 +126,15 @@ export class CoffeeBot {
   }
 
   async handleCallback(callback) {
-    await this.telegram.answerCallbackQuery(callback.id);
+    // The acknowledgement clears Telegram's button spinner. It does not need
+    // to delay the actual response to the button.
+    this.telegram.answerCallbackQuery(callback.id).catch((error) => {
+      console.error('Could not answer callback query:', error);
+    });
     const chatId = callback.message.chat.id;
-    const messageId = callback.message.message_id;
+    // A photo cannot be edited with editMessageText, so send the next screen
+    // directly instead of waiting for that request to fail first.
+    const messageId = callback.message.photo ? undefined : callback.message.message_id;
     const userId = String(callback.from.id);
     const data = callback.data;
     await this.rememberUser(callback.from, chatId);
@@ -677,20 +684,18 @@ export class CoffeeBot {
 
   async notifyQueueWindow() {
     const targets = notificationTargets(this.store.get());
-    for (const order of targets) {
-      const currentPosition = positionFor(this.store.get(), order.userId);
-      const text = currentPosition === 1
+    for (const { order, position } of targets) {
+      const text = position === 1
         ? `Your turn\nPlease come to the counter.\n\n${orderDescription(order)}`
         : `You are next\nPlease be ready.\n\n${orderDescription(order)}`;
-      // Both notified customers keep this button. It only succeeds for queue #1,
-      // so queue #2 can use the same message after moving forward.
+      // Queue #2 can use this button after moving into the current position.
       const controls = keyboard(
         [button('Done / Collected', `done:${order.id}`)],
         [button('My order', 'my_order')],
       );
       try {
         await this.telegram.sendMessage(order.userId, text, controls);
-        await this.store.update((state) => markNotified(state, order.id));
+        await this.store.update((state) => markNotified(state, order.id, position));
       } catch (error) {
         console.error(`Could not notify order ${order.id}:`, error);
       }
@@ -744,9 +749,17 @@ export class CoffeeBot {
   }
 
   async rememberUser(from, chatId) {
+    const userId = String(from.id);
+    const name = displayName(from);
+    const username = from.username ? from.username.replace(/^@/, '').toLowerCase() : null;
+    const existing = this.store.get().users?.[userId];
+    const lastSeenAgeMs = Date.now() - Date.parse(existing?.lastSeenAt);
+    if (existing?.name === name && existing.username === username && existing.chatId === String(chatId)
+      && lastSeenAgeMs >= 0 && lastSeenAgeMs < USER_REFRESH_INTERVAL_MS) return;
+
     await this.store.update((state) => recordKnownUser(state, {
       userId: from.id,
-      name: displayName(from),
+      name,
       username: from.username,
       chatId,
     }));

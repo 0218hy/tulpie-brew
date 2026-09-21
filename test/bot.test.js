@@ -13,6 +13,7 @@ import { createInitialState, ShopStatus } from '../src/state.js';
 class MemoryStore {
   constructor(state) {
     this.state = structuredClone(state);
+    this.updateCount = 0;
   }
 
   get() {
@@ -23,6 +24,7 @@ class MemoryStore {
     const draft = structuredClone(this.state);
     const result = await mutator(draft);
     this.state = draft;
+    this.updateCount += 1;
     return result;
   }
 }
@@ -60,7 +62,7 @@ function botWithThreeOrders() {
   return { bot: new CoffeeBot({ telegram, store }), store, telegram };
 }
 
-test('notifies two customers initially, then only the third after completion', async () => {
+test('notifies the next customer again when they become current', async () => {
   const { bot, telegram } = botWithThreeOrders();
   await bot.notifyQueueWindow();
 
@@ -71,8 +73,68 @@ test('notifies two customers initially, then only the third after completion', a
   telegram.messages.length = 0;
   await bot.completeOwn('1', '1', '1');
   const turnMessages = telegram.messages.filter((message) => /turn|next/i.test(message.text));
-  assert.deepEqual(turnMessages.map((message) => message.chatId), ['3']);
-  assert.match(turnMessages[0].text, /You are next/i);
+  assert.deepEqual(turnMessages.map((message) => message.chatId), ['2', '3']);
+  assert.match(turnMessages[0].text, /Your turn/i);
+  assert.match(turnMessages[1].text, /You are next/i);
+
+  telegram.messages.length = 0;
+  await bot.notifyQueueWindow();
+  assert.equal(telegram.messages.length, 0);
+});
+
+test('button responses do not wait for the callback acknowledgement', async () => {
+  const telegram = new FakeTelegram();
+  let resolveAcknowledgement;
+  telegram.answerCallbackQuery = () => new Promise((resolve) => { resolveAcknowledgement = resolve; });
+  const bot = new CoffeeBot({ telegram, store: new MemoryStore(createInitialState(['999'])) });
+  const pendingResponse = bot.handleCallback({
+    id: 'slow-ack',
+    from: { id: 1, first_name: 'Alex' },
+    data: 'home',
+    message: { message_id: 10, chat: { id: 1 } },
+  });
+
+  await new Promise(setImmediate);
+  assert.equal(telegram.edits.length, 1);
+  resolveAcknowledgement();
+  await pendingResponse;
+});
+
+test('repeated buttons do not rewrite an unchanged user profile', async () => {
+  const telegram = new FakeTelegram();
+  const store = new MemoryStore(createInitialState(['999']));
+  const bot = new CoffeeBot({ telegram, store });
+  const callback = {
+    id: 'home-1',
+    from: { id: 1, first_name: 'Alex' },
+    data: 'home',
+    message: { message_id: 10, chat: { id: 1 } },
+  };
+
+  await bot.handleCallback(callback);
+  const writesAfterFirstButton = store.updateCount;
+  await bot.handleCallback({ ...callback, id: 'home-2' });
+  assert.equal(store.updateCount, writesAfterFirstButton);
+
+  await bot.handleCallback({ ...callback, id: 'home-3', from: { ...callback.from, username: 'alex' } });
+  assert.equal(store.updateCount, writesAfterFirstButton + 1);
+});
+
+test('buttons on a menu photo skip the failing text edit request', async () => {
+  const telegram = new FakeTelegram();
+  const bot = new CoffeeBot({ telegram, store: new MemoryStore(createInitialState(['999'])) });
+  bot.sessions.set('1', { type: 'order', mode: 'create' });
+
+  await bot.handleCallback({
+    id: 'photo-button',
+    from: { id: 1, first_name: 'Alex' },
+    data: 'pick:americano',
+    message: { message_id: 10, chat: { id: 1 }, photo: [{ file_id: 'photo-id' }] },
+  });
+
+  assert.equal(telegram.edits.length, 0);
+  assert.equal(telegram.messages.length, 1);
+  assert.match(telegram.messages[0].text, /bring your own cup/i);
 });
 
 test('the my-order view stays private while customers can open a shared queue', async () => {

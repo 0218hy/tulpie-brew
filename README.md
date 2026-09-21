@@ -10,7 +10,7 @@ A Telegram coffee-order queue bot designed to keep admin work to a minimum.
    - Queue #1: **It is your turn. Please come to the coffee counter now.**
    - Queue #2: **You are next. Please be ready.**
 4. Queue #1 collects their drink and presses **Done / Collected**.
-5. The bot completes that order and automatically notifies the new Queue #2.
+5. The bot completes that order, tells the former Queue #2 it is now their turn, and notifies the new Queue #2 that they are next.
 6. The process continues until the queue is empty.
 
 Customers see only their own order, status, and queue position. Only admins can see the complete queue and order details.

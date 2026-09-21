@@ -100,7 +100,8 @@ export function createOrder(state, { userId, name, menuItemId, useShopCup = fals
     sequence: state.orders.length
       ? Math.max(...state.orders.map((entry) => entry.sequence)) + 1
       : 1,
-    notified: false,
+    notifiedCurrent: false,
+    notifiedNext: false,
     createdAt: new Date().toISOString(),
   };
 
@@ -159,12 +160,18 @@ export function completeCurrentOrder(state, { userId, completedBy = 'customer' }
 }
 
 export function notificationTargets(state) {
-  return queue(state).slice(0, 2).filter((order) => !order.notified);
+  return queue(state).slice(0, 2).flatMap((order, index) => {
+    const position = index + 1;
+    const alreadyNotified = position === 1 ? order.notifiedCurrent : order.notifiedNext;
+    return alreadyNotified ? [] : [{ order, position }];
+  });
 }
 
-export function markNotified(state, orderId) {
-  const order = state.orders.find((candidate) => candidate.id === String(orderId));
-  if (order) order.notified = true;
+export function markNotified(state, orderId, position) {
+  const order = queue(state)[position - 1];
+  if (order?.id !== String(orderId)) return;
+  if (position === 1) order.notifiedCurrent = true;
+  if (position === 2) order.notifiedNext = true;
 }
 
 export function setShopStatus(state, status) {
