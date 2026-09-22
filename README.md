@@ -66,6 +66,29 @@ Run tests with:
 npm test
 ```
 
+## Dry run
+
+`scripts/dry-run.js` drives the bot against a fake Telegram client and prints
+every message it would send, naming each recipient. It needs no bot token, makes
+no network calls, and writes no state file, so it is safe to run while the real
+bot is live.
+
+```bash
+npm run dry-run            # order alerts: who is notified about what
+npm run dry-run -- queue   # queue progression as customers are served
+npm run dry-run -- all
+```
+
+Screen edits are hidden by default so the notifications stand out; set
+`SHOW_EDITS=1` to include them.
+
+Use this to check notification behaviour before touching a real bot. To test
+against Telegram itself, create a **second** bot with BotFather and point a
+separate `DATA_FILE` at it. Never run a second instance against the production
+token: Telegram allows one `getUpdates` consumer per token, so the two would
+steal updates from each other and the live bot would start missing button
+presses.
+
 ## Docker Compose
 
 From the project directory, create `.env`:

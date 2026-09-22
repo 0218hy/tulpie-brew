@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "dry-run": "node scripts/dry-run.js"
   },
   "engines": {
     "node": ">=22.9"
