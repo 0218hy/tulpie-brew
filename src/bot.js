@@ -19,12 +19,14 @@ import {
   renameMenuItem,
   resolveKnownUser,
   openNotificationSubscribers,
+  orderNotificationAdmins,
   setCupInventory,
   setHelpText,
   setMenuImage,
   setMenuItemDescription,
   setMenuMessage,
   setOpenNotifications,
+  setOrderNotifications,
   setShopStatus,
   toggleMenuItem,
 } from './queue.js';
@@ -32,6 +34,12 @@ import { ShopStatus } from './state.js';
 
 const button = (text, callbackData) => ({ text, callback_data: callbackData });
 const keyboard = (...rows) => ({ inline_keyboard: rows.filter((row) => row.length) });
+const USER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const ORDER_ALERT_HEADINGS = {
+  created: 'New order',
+  edited: 'Order updated',
+  cancelled: 'Order cancelled',
+};
 const buttonRows = (buttons, size = 2) => {
   const rows = [];
   for (let index = 0; index < buttons.length; index += size) rows.push(buttons.slice(index, index + size));
@@ -118,9 +126,15 @@ export class CoffeeBot {
   }
 
   async handleCallback(callback) {
-    await this.telegram.answerCallbackQuery(callback.id);
+    // The acknowledgement clears Telegram's button spinner. It does not need
+    // to delay the actual response to the button.
+    this.telegram.answerCallbackQuery(callback.id).catch((error) => {
+      console.error('Could not answer callback query:', error);
+    });
     const chatId = callback.message.chat.id;
-    const messageId = callback.message.message_id;
+    // A photo cannot be edited with editMessageText, so send the next screen
+    // directly instead of waiting for that request to fail first.
+    const messageId = callback.message.photo ? undefined : callback.message.message_id;
     const userId = String(callback.from.id);
     const data = callback.data;
     await this.rememberUser(callback.from, chatId);
@@ -142,6 +156,7 @@ export class CoffeeBot {
     this.requireAdmin(userId);
     if (data === 'admin') return this.showAdminPanel(chatId, userId, messageId);
     if (data === 'admin_queue') return this.showAdminQueue(chatId, messageId);
+    if (data === 'admin_order_alerts') return this.toggleOrderNotifications(chatId, userId, messageId);
     if (data === 'admin_cancel_list') return this.showCancelOrderList(chatId, messageId);
     if (data === 'admin_menu') return this.showAdminMenu(chatId, messageId);
     if (data === 'admin_menu_message') return this.prompt(chatId, userId, { type: 'menu_message' }, 'Send the customer-facing menu message.');
@@ -316,6 +331,7 @@ export class CoffeeBot {
       keyboard([button('🧾 My order', 'my_order')], [button('🏠 Home', 'home')]),
     );
     await this.notifyQueueWindow();
+    await this.notifyAdminsOfOrder(order, session.mode === 'edit' ? 'edited' : 'created');
   }
 
   async showMyOrder(chatId, userId, messageId) {
@@ -358,9 +374,10 @@ export class CoffeeBot {
   }
 
   async cancelOwn(chatId, userId, messageId) {
-    await this.store.update((state) => cancelOwnOrder(state, userId));
+    const order = await this.store.update((state) => cancelOwnOrder(state, userId));
     await this.render(chatId, messageId, 'Order cancelled.', keyboard([button('Home', 'home')]));
     await this.notifyQueueWindow();
+    await this.notifyAdminsOfOrder(order, 'cancelled');
   }
 
   async completeOwn(chatId, userId, orderId, messageId) {
@@ -389,6 +406,7 @@ export class CoffeeBot {
       : state.shopStatus === ShopStatus.PAUSED
         ? [button('Resume', 'status:open'), button('Close', 'status:closed')]
         : [button('Open', 'status:open')];
+    const orderAlerts = state.users?.[userId]?.orderNotifications ? 'On' : 'Off';
     return this.render(
       chatId,
       messageId,
@@ -398,9 +416,18 @@ export class CoffeeBot {
         [button('Queue', 'admin_queue'), button('Menu', 'admin_menu')],
         [button(`Shop cups: ${state.cupsAvailable}`, 'admin_cups'), button('Edit help', 'admin_help')],
         [button('Add admin', 'admin_add'), button('Remove admin', 'admin_remove')],
+        [button(`Order alerts: ${orderAlerts}`, 'admin_order_alerts')],
         [button('Customer view', 'home')],
       ),
     );
+  }
+
+  async toggleOrderNotifications(chatId, userId, messageId) {
+    await this.store.update((state) => {
+      const current = state.users?.[userId]?.orderNotifications ?? false;
+      return setOrderNotifications(state, userId, !current);
+    });
+    return this.showAdminPanel(chatId, userId, messageId);
   }
 
   async changeStatus(chatId, userId, status, messageId) {
@@ -657,22 +684,46 @@ export class CoffeeBot {
 
   async notifyQueueWindow() {
     const targets = notificationTargets(this.store.get());
-    for (const order of targets) {
-      const currentPosition = positionFor(this.store.get(), order.userId);
-      const text = currentPosition === 1
+    for (const { order, position } of targets) {
+      const text = position === 1
         ? `Your turn\nPlease come to the counter.\n\n${orderDescription(order)}`
         : `You are next\nPlease be ready.\n\n${orderDescription(order)}`;
-      // Both notified customers keep this button. It only succeeds for queue #1,
-      // so queue #2 can use the same message after moving forward.
+      // Queue #2 can use this button after moving into the current position.
       const controls = keyboard(
         [button('Done / Collected', `done:${order.id}`)],
         [button('My order', 'my_order')],
       );
       try {
         await this.telegram.sendMessage(order.userId, text, controls);
-        await this.store.update((state) => markNotified(state, order.id));
+        await this.store.update((state) => markNotified(state, order.id, position));
       } catch (error) {
         console.error(`Could not notify order ${order.id}:`, error);
+      }
+    }
+  }
+
+  // Admin-initiated cancellations are deliberately silent: the admin who ran it
+  // already knows, and the others see the change in the queue view.
+  async notifyAdminsOfOrder(order, event) {
+    const heading = ORDER_ALERT_HEADINGS[event];
+    if (!heading) return;
+    const state = this.store.get();
+    const recipients = orderNotificationAdmins(state);
+    if (!recipients.length) return;
+
+    const text = `${heading} #${order.id}\n${order.name}\n\n${orderDescription(order)}\n\n${queue(state).length} in queue`;
+    const rows = [[button('Queue', 'admin_queue')]];
+    if (event !== 'cancelled') rows.push([button('Cancel order', `admin_cancel_confirm:${order.id}`)]);
+    const controls = keyboard(...rows);
+
+    for (const admin of recipients) {
+      // An admin ordering for themselves does not need to be told about it.
+      if (admin.userId === String(order.userId)) continue;
+      try {
+        await this.telegram.sendMessage(admin.chatId, text, controls);
+      } catch (error) {
+        // One admin blocking the bot must not stop the alert reaching the rest.
+        console.error(`Could not send the order alert to ${admin.userId}:`, error);
       }
     }
   }
@@ -698,9 +749,17 @@ export class CoffeeBot {
   }
 
   async rememberUser(from, chatId) {
+    const userId = String(from.id);
+    const name = displayName(from);
+    const username = from.username ? from.username.replace(/^@/, '').toLowerCase() : null;
+    const existing = this.store.get().users?.[userId];
+    const lastSeenAgeMs = Date.now() - Date.parse(existing?.lastSeenAt);
+    if (existing?.name === name && existing.username === username && existing.chatId === String(chatId)
+      && lastSeenAgeMs >= 0 && lastSeenAgeMs < USER_REFRESH_INTERVAL_MS) return;
+
     await this.store.update((state) => recordKnownUser(state, {
       userId: from.id,
-      name: displayName(from),
+      name,
       username: from.username,
       chatId,
     }));

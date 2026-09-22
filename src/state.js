@@ -54,12 +54,29 @@ export class JsonStore {
     this.state.menuImageFileId ??= null;
     this.state.cupsAvailable = nonNegativeInteger(this.state.cupsAvailable);
     this.state.menu ??= [];
+    this.state.orders ??= [];
     for (const item of this.state.menu) {
       item.description ??= '';
       const migration = legacyDefaultNames[item.id];
       if (migration && item.name === migration[0]) item.name = migration[1];
     }
-    for (const user of Object.values(this.state.users)) user.openNotifications ??= false;
+    for (const user of Object.values(this.state.users)) {
+      user.openNotifications ??= false;
+      user.orderNotifications ??= false;
+    }
+    // Older state files had one flag for both queue positions. A current order
+    // may have received only the "you are next" alert, so send it one current
+    // alert on upgrade; preserve the next alert already sent to queue #2.
+    const queuedPositions = new Map(this.state.orders
+      .filter((order) => order.status === 'queued')
+      .sort((a, b) => a.sequence - b.sequence)
+      .map((order, index) => [order.id, index + 1]));
+    for (const order of this.state.orders) {
+      const position = queuedPositions.get(order.id);
+      order.notifiedCurrent ??= false;
+      order.notifiedNext ??= Boolean(order.notified && position === 2);
+      delete order.notified;
+    }
     return this.get();
   }
 
@@ -72,15 +89,15 @@ export class JsonStore {
     if (!this.state) throw new Error('Store has not been loaded.');
     const draft = copy(this.state);
     const result = await mutator(draft);
+    await this.save(draft);
     this.state = draft;
-    await this.save();
     return result;
   }
 
-  async save() {
+  async save(state = this.state) {
     await mkdir(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.tmp`;
-    await writeFile(temporaryPath, JSON.stringify(this.state, null, 2));
+    await writeFile(temporaryPath, JSON.stringify(state, null, 2));
     await rename(temporaryPath, this.filePath);
   }
 }
